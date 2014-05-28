@@ -1,0 +1,127 @@
+language: php
+
+php:
+#  - 5.2 # travis doesn't suppport php5.2 with open_ssl
+  - 5.3
+  - 5.4
+  - 5.5
+
+env:
+  - DB=mysql
+#  - DB=pgsql
+#  - DB=sqlite
+
+before_install:
+  - "export DISPLAY=:99.0"
+  - "sh -e /etc/init.d/xvfb start"
+  - "wget http://selenium.googlecode.com/files/selenium-server-standalone-2.39.0.jar"
+  - "java -jar selenium-server-standalone-2.39.0.jar > /tmp/selenium.log 2> /tmp/selenium.error &"
+before_script:
+  - sudo apt-get install apache2 libapache2-mod-fastcgi
+  - sudo cp ~/.phpenv/versions/$(phpenv version-name)/etc/php-fpm.conf.default ~/.phpenv/versions/$(phpenv version-name)/etc/php-fpm.conf
+  - sudo a2enmod rewrite actions fastcgi alias
+  - echo "cgi.fix_pathinfo = 1" >> ~/.phpenv/versions/$(phpenv version-name)/etc/php.ini
+  - ~/.phpenv/versions/$(phpenv version-name)/sbin/php-fpm
+  - mkdir build
+  - cp app/Test/travis/travis-ci-apache build/travis-ci-apache
+  - sudo cp -f build/travis-ci-apache /etc/apache2/sites-available/default
+  - sudo sed -e "s?%TRAVIS_BUILD_DIR%?$(pwd)?g" --in-place /etc/apache2/sites-available/default
+  - sudo service apache2 restart
+  - curl -s http://getcomposer.org/installer | php
+  - php composer.phar install --dev --no-interaction
+  - sh -c "if [ '$DB' = 'mysql' ]; then mysql -e 'CREATE DATABASE cakephp_test;'; fi"
+  - sh -c "if [ '$DB' = 'mysql' ]; then mysql -e 'CREATE DATABASE cakephp_test2;'; fi"
+  - sh -c "if [ '$DB' = 'mysql' ]; then mysql -e 'CREATE DATABASE cakephp_test3;'; fi"
+  - sh -c "if [ '$DB' = 'pgsql' ]; then psql -c 'CREATE DATABASE cakephp_test;' -U postgres; fi"
+  - sh -c "if [ '$DB' = 'pgsql' ]; then psql -c 'CREATE SCHEMA test2;' -U postgres -d cakephp_test; fi"
+  - sh -c "if [ '$DB' = 'pgsql' ]; then psql -c 'CREATE SCHEMA test3;' -U postgres -d cakephp_test; fi"
+  - chmod -R 777 ./app/tmp
+  - echo "<?php
+    class DATABASE_CONFIG {
+    private \$identities = array(
+      'mysql' => array(
+        'datasource' => 'Database/Mysql',
+        'host' => '0.0.0.0',
+        'login' => 'travis'
+      ),
+      'pgsql' => array(
+        'datasource' => 'Database/Postgres',
+        'host' => '127.0.0.1',
+        'login' => 'postgres',
+        'database' => 'cakephp_test',
+        'schema' => array(
+          'default' => 'public',
+          'test' => 'public',
+          'test2' => 'test2',
+          'test_database_three' => 'test3'
+        )
+      ),
+      'sqlite' => array(
+        'datasource' => 'Database/Sqlite',
+        'database' => array(
+          'default' => ':memory:',
+          'test' => ':memory:',
+          'test2' => '/tmp/cakephp_test2.db',
+          'test_database_three' => '/tmp/cakephp_test3.db'
+        ),
+      )
+    );
+    public \$default = array(
+      'persistent' => false,
+      'host' => '',
+      'login' => '',
+      'password' => '',
+      'database' => 'cakephp_test',
+      'prefix' => ''
+    );
+    public \$test = array(
+      'persistent' => false,
+      'host' => '',
+      'login' => '',
+      'password' => '',
+      'database' => 'cakephp_test',
+      'prefix' => ''
+    );
+    public \$test2 = array(
+      'persistent' => false,
+      'host' => '',
+      'login' => '',
+      'password' => '',
+      'database' => 'cakephp_test2',
+      'prefix' => ''
+    );
+    public \$test_database_three = array(
+      'persistent' => false,
+      'host' => '',
+      'login' => '',
+      'password' => '',
+      'database' => 'cakephp_test3',
+      'prefix' => ''
+    );
+    public function __construct() {
+      \$db = 'mysql';
+      if (!empty(\$_SERVER['DB'])) {
+        \$db = \$_SERVER['DB'];
+      }
+      foreach (array('default', 'test', 'test2', 'test_database_three') as \$source) {
+        \$config = array_merge(\$this->{\$source}, \$this->identities[\$db]);
+        if (is_array(\$config['database'])) {
+          \$config['database'] = \$config['database'][\$source];
+        }
+        if (!empty(\$config['schema']) && is_array(\$config['schema'])) {
+          \$config['schema'] = \$config['schema'][\$source];
+        }
+        \$this->{\$source} = \$config;
+      }
+    }
+    }" > app/Config/database.php
+  - mysql cakephp_test < app/Config/sql/mysql.sql
+script:
+  - mkdir -p build/logs
+  - cd ./app; ./Console/cake test app All --stderr --coverage-clover ../build/logs/clover.xml --configuration ../phpunit.xml.dist
+  - cd ../
+  #- 'sudo `which php` ./app/Console/cake.php server &'
+  - 'mysql -e "drop database if exists test_candycane;create database test_candycane;"; phpunit app/Test/Case/Selenium/InstallerTest.php'
+
+after_script:
+  - php vendor/bin/coveralls -v
